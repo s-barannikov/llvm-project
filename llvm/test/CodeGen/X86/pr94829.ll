@@ -4,30 +4,8 @@
 define ptr @test(i64 %x) {
 ; CHECK-LABEL: test:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    movq %rdi, %rax
-; CHECK-NEXT:    shrq %rax
-; CHECK-NEXT:    movabsq $6148914691236517205, %rcx # imm = 0x5555555555555555
-; CHECK-NEXT:    andq %rax, %rcx
-; CHECK-NEXT:    subq %rcx, %rdi
-; CHECK-NEXT:    movabsq $3689348814741910323, %rax # imm = 0x3333333333333333
-; CHECK-NEXT:    movq %rdi, %rcx
-; CHECK-NEXT:    andq %rax, %rcx
-; CHECK-NEXT:    shrq $2, %rdi
-; CHECK-NEXT:    andq %rax, %rdi
-; CHECK-NEXT:    addq %rcx, %rdi
-; CHECK-NEXT:    movq %rdi, %rax
-; CHECK-NEXT:    shrq $4, %rax
-; CHECK-NEXT:    addq %rdi, %rax
-; CHECK-NEXT:    movabsq $1085102592571150095, %rcx # imm = 0xF0F0F0F0F0F0F0F
-; CHECK-NEXT:    andq %rax, %rcx
-; CHECK-NEXT:    movabsq $72340172838076673, %rax # imm = 0x101010101010101
-; CHECK-NEXT:    imulq %rcx, %rax
-; CHECK-NEXT:    shrq $56, %rax
-; CHECK-NEXT:    cmpq $2, %rax
-; CHECK-NEXT:    jb .LBB0_2
-; CHECK-NEXT:  # %bb.1: # %if.else
-; CHECK-NEXT:    cmpl $2, %eax
-; CHECK-NEXT:  .LBB0_2: # %exit1
+; CHECK-NEXT:    leaq -1(%rdi), %rax
+; CHECK-NEXT:    testq %rax, %rdi
 ; CHECK-NEXT:    xorl %eax, %eax
 ; CHECK-NEXT:    retq
 entry:
