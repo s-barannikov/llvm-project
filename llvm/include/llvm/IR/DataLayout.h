@@ -91,6 +91,9 @@ public:
 private:
   bool BigEndian = false;
 
+  /// The size of a byte in bits.
+  unsigned ByteWidth = 8;
+
   unsigned AllocaAddrSpace = 0;
   unsigned ProgramAddrSpace = 0;
   unsigned DefaultGlobalsAddrSpace = 0;
@@ -155,6 +158,9 @@ private:
   /// Internal helper method that returns requested alignment for type.
   Align getAlignment(Type *Ty, bool abi_or_pref) const;
 
+  /// Attempts to parse a byte specification ('b').
+  Error parseByteSpec(StringRef Spec);
+
   /// Attempts to parse primitive specification ('i', 'f', or 'v').
   Error parsePrimitiveSpec(StringRef Spec);
 
@@ -194,6 +200,9 @@ public:
   /// Layout endianness...
   bool isLittleEndian() const { return !BigEndian; }
   bool isBigEndian() const { return BigEndian; }
+
+  /// Returns the size of a byte, in bits.
+  unsigned getByteWidth() const { return ByteWidth; }
 
   /// Returns the string representation of the DataLayout.
   ///
@@ -364,7 +373,7 @@ public:
 
   /// Returns the maximum index size over all address spaces.
   unsigned getMaxIndexSizeInBits() const {
-    return getMaxIndexSize() * 8;
+    return getMaxIndexSize() * ByteWidth;
   }
 
   /// Size in bits of index used for address calculation in getelementptr.
@@ -384,7 +393,7 @@ public:
   unsigned getIndexTypeSizeInBits(Type *Ty) const;
 
   unsigned getPointerTypeSize(Type *Ty) const {
-    return getPointerTypeSizeInBits(Ty) / 8;
+    return getPointerTypeSizeInBits(Ty) / ByteWidth;
   }
 
   /// Size examples:
@@ -422,7 +431,8 @@ public:
   /// For example, returns 5 for i36 and 10 for x86_fp80.
   TypeSize getTypeStoreSize(Type *Ty) const {
     TypeSize BaseSize = getTypeSizeInBits(Ty);
-    return {divideCeil(BaseSize.getKnownMinValue(), 8), BaseSize.isScalable()};
+    return {divideCeil(BaseSize.getKnownMinValue(), ByteWidth),
+            BaseSize.isScalable()};
   }
 
   /// Returns the maximum number of bits that may be overwritten by
@@ -433,7 +443,7 @@ public:
   ///
   /// For example, returns 40 for i36 and 80 for x86_fp80.
   TypeSize getTypeStoreSizeInBits(Type *Ty) const {
-    return 8 * getTypeStoreSize(Ty);
+    return getTypeStoreSize(Ty) * ByteWidth;
   }
 
   /// Returns true if no extra padding bits are needed when storing the
@@ -466,7 +476,7 @@ public:
   /// This is the amount that alloca reserves for this type. For example,
   /// returns 96 or 128 for x86_fp80, depending on alignment.
   TypeSize getTypeAllocSizeInBits(Type *Ty) const {
-    return 8 * getTypeAllocSize(Ty);
+    return getTypeAllocSize(Ty) * ByteWidth;
   }
 
   /// Returns the minimum ABI-required alignment for the specified type.
@@ -565,13 +575,14 @@ inline LLVMTargetDataRef wrap(const DataLayout *P) {
 class StructLayout final : public TrailingObjects<StructLayout, TypeSize> {
   TypeSize StructSize;
   Align StructAlignment;
+  unsigned ByteWidth;
   unsigned IsPadded : 1;
   unsigned NumElements : 31;
 
 public:
   TypeSize getSizeInBytes() const { return StructSize; }
 
-  TypeSize getSizeInBits() const { return 8 * StructSize; }
+  TypeSize getSizeInBits() const { return StructSize * ByteWidth; }
 
   Align getAlignment() const { return StructAlignment; }
 
@@ -597,7 +608,7 @@ public:
   }
 
   TypeSize getElementOffsetInBits(unsigned Idx) const {
-    return getElementOffset(Idx) * 8;
+    return getElementOffset(Idx) * ByteWidth;
   }
 
 private:
