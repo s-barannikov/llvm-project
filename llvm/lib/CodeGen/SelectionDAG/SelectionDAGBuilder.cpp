@@ -2248,17 +2248,15 @@ void SelectionDAGBuilder::visitRet(const ReturnInst &I) {
     Chain = DAG.getNode(ISD::TokenFactor, getCurSDLoc(),
                         MVT::Other, Chains);
   } else if (I.getNumOperands() != 0) {
+    const Function *F = I.getParent()->getParent();
+    GetReturnInfo(F->getCallingConv(), F->getReturnType(), F->getAttributes(),
+                  Outs, TLI, DL);
+
     SmallVector<Type *, 4> Types;
     ComputeValueTypes(DL, I.getOperand(0)->getType(), Types);
     unsigned NumValues = Types.size();
     if (NumValues) {
       SDValue RetOp = getValue(I.getOperand(0));
-
-      const Function *F = I.getParent()->getParent();
-
-      bool NeedsRegBlock = TLI.functionArgumentNeedsConsecutiveRegisters(
-          I.getOperand(0)->getType(), F->getCallingConv(),
-          /*IsVarArg*/ false, DL);
 
       ISD::NodeType ExtendKind = ISD::ANY_EXTEND;
       if (F->getAttributes().hasRetAttr(Attribute::SExt))
@@ -2267,7 +2265,6 @@ void SelectionDAGBuilder::visitRet(const ReturnInst &I) {
         ExtendKind = ISD::ZERO_EXTEND;
 
       LLVMContext &Context = F->getContext();
-      bool RetInReg = F->getAttributes().hasRetAttr(Attribute::InReg);
 
       for (unsigned j = 0; j != NumValues; ++j) {
         EVT VT = TLI.getValueType(DL, Types[j]);
@@ -2283,38 +2280,7 @@ void SelectionDAGBuilder::visitRet(const ReturnInst &I) {
         getCopyToParts(DAG, getCurSDLoc(),
                        SDValue(RetOp.getNode(), RetOp.getResNo() + j),
                        &Parts[0], NumParts, PartVT, &I, CC, ExtendKind);
-
-        // 'inreg' on function refers to return value
-        ISD::ArgFlagsTy Flags = ISD::ArgFlagsTy();
-        if (RetInReg)
-          Flags.setInReg();
-
-        if (I.getOperand(0)->getType()->isPointerTy()) {
-          Flags.setPointer();
-          Flags.setPointerAddrSpace(
-              cast<PointerType>(I.getOperand(0)->getType())->getAddressSpace());
-        }
-
-        if (NeedsRegBlock) {
-          Flags.setInConsecutiveRegs();
-          if (j == NumValues - 1)
-            Flags.setInConsecutiveRegsLast();
-        }
-
-        // Propagate extension type if any
-        if (ExtendKind == ISD::SIGN_EXTEND)
-          Flags.setSExt();
-        else if (ExtendKind == ISD::ZERO_EXTEND)
-          Flags.setZExt();
-        else if (F->getAttributes().hasRetAttr(Attribute::NoExt))
-          Flags.setNoExt();
-
-        for (unsigned i = 0; i < NumParts; ++i) {
-          Outs.push_back(ISD::OutputArg(Flags,
-                                        Parts[i].getValueType().getSimpleVT(),
-                                        VT, Types[j], 0, 0));
-          OutVals.push_back(Parts[i]);
-        }
+        llvm::copy(Parts, std::back_inserter(OutVals));
       }
     }
   }

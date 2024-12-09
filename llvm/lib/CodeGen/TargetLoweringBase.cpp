@@ -1762,7 +1762,7 @@ void llvm::GetReturnInfo(CallingConv::ID CC, Type *ReturnType,
   unsigned NumValues = Types.size();
   if (NumValues == 0) return;
 
-  for (Type *Ty : Types) {
+  for (auto [ValIdx, Ty] : enumerate(Types)) {
     EVT VT = TLI.getValueType(DL, Ty);
     ISD::NodeType ExtendKind = ISD::ANY_EXTEND;
 
@@ -1789,6 +1789,20 @@ void llvm::GetReturnInfo(CallingConv::ID CC, Type *ReturnType,
       Flags.setSExt();
     else if (attr.hasRetAttr(Attribute::ZExt))
       Flags.setZExt();
+    else if (attr.hasRetAttr(Attribute::NoExt))
+      Flags.setNoExt();
+
+    if (ReturnType->isPointerTy()) {
+      Flags.setPointer();
+      Flags.setPointerAddrSpace(cast<PointerType>(ReturnType)->getAddressSpace());
+    }
+
+    if (TLI.functionArgumentNeedsConsecutiveRegisters(ReturnType, CC,
+                                                      /*isVarArg=*/false, DL)) {
+      Flags.setInConsecutiveRegs();
+      if (ValIdx == NumValues - 1)
+        Flags.setInConsecutiveRegsLast();
+    }
 
     for (unsigned i = 0; i < NumParts; ++i)
       Outs.push_back(ISD::OutputArg(Flags, PartVT, VT, Ty, 0, 0));
