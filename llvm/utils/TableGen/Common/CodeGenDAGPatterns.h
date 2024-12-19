@@ -1023,47 +1023,6 @@ struct DAGDefaultOperand {
   std::vector<TreePatternNodePtr> DefaultOps;
 };
 
-class DAGInstruction {
-  std::vector<const Record *> Results;
-  std::vector<const Record *> Operands;
-  std::vector<const Record *> ImpResults;
-  TreePatternNodePtr SrcPattern;
-  TreePatternNodePtr ResultPattern;
-
-public:
-  DAGInstruction(std::vector<const Record *> &&Results,
-                 std::vector<const Record *> &&Operands,
-                 std::vector<const Record *> &&ImpResults,
-                 TreePatternNodePtr SrcPattern = nullptr,
-                 TreePatternNodePtr ResultPattern = nullptr)
-      : Results(std::move(Results)), Operands(std::move(Operands)),
-        ImpResults(std::move(ImpResults)), SrcPattern(SrcPattern),
-        ResultPattern(ResultPattern) {}
-
-  unsigned getNumResults() const { return Results.size(); }
-  unsigned getNumOperands() const { return Operands.size(); }
-  unsigned getNumImpResults() const { return ImpResults.size(); }
-  ArrayRef<const Record *> getImpResults() const { return ImpResults; }
-
-  const Record *getResult(unsigned RN) const {
-    assert(RN < Results.size());
-    return Results[RN];
-  }
-
-  const Record *getOperand(unsigned ON) const {
-    assert(ON < Operands.size());
-    return Operands[ON];
-  }
-
-  const Record *getImpResult(unsigned RN) const {
-    assert(RN < ImpResults.size());
-    return ImpResults[RN];
-  }
-
-  TreePatternNodePtr getSrcPattern() const { return SrcPattern; }
-  TreePatternNodePtr getResultPattern() const { return ResultPattern; }
-};
-
 /// PatternToMatch - Used by CodeGenDAGPatterns to keep tab of patterns
 /// processed to produce isel.
 class PatternToMatch {
@@ -1123,7 +1082,6 @@ private:
   std::map<const Record *, std::unique_ptr<TreePattern>, LessRecordByID>
       PatternFragments;
   std::map<const Record *, DAGDefaultOperand, LessRecordByID> DefaultOperands;
-  std::map<const Record *, DAGInstruction, LessRecordByID> Instructions;
 
   // Specific SDNode definitions:
   const Record *intrinsic_void_sdnode;
@@ -1220,16 +1178,9 @@ public:
   ptm_iterator ptm_end() const { return PatternsToMatch.end(); }
   iterator_range<ptm_iterator> ptms() const { return PatternsToMatch; }
 
-  /// Parse the Pattern for an instruction, and insert the result in DAGInsts.
-  typedef std::map<const Record *, DAGInstruction, LessRecordByID> DAGInstMap;
-  void parseInstructionPattern(CodeGenInstruction &CGI, const ListInit *Pattern,
-                               DAGInstMap &DAGInsts);
-
-  const DAGInstruction &getInstruction(const Record *R) const {
-    auto F = Instructions.find(R);
-    assert(F != Instructions.end() && "Unknown instruction!");
-    return F->second;
-  }
+  /// Parses the Pattern embedded into an instruction.
+  void parseInstructionPattern(CodeGenInstruction &CGI,
+                               const ListInit *Pattern);
 
   const Record *get_intrinsic_void_sdnode() const {
     return intrinsic_void_sdnode;

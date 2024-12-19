@@ -2530,7 +2530,6 @@ bool TreePatternNode::ApplyTypeConstraints(TreePattern &TP, bool NotRegisters) {
   }
 
   if (getOperator()->isSubClassOf("Instruction")) {
-    const DAGInstruction &Inst = CDP.getInstruction(getOperator());
     CodeGenInstruction &InstInfo =
         CDP.getTargetInfo().getInstruction(getOperator());
 
@@ -2538,10 +2537,14 @@ bool TreePatternNode::ApplyTypeConstraints(TreePattern &TP, bool NotRegisters) {
 
     // Apply the result types to the node, these come from the things in the
     // (outs) list of the instruction.
+    // FIXME: The `std::min` is supposed to account for optional def operands
+    //   that were actually specified, but attempting to specify them actually
+    //   results in an OOB access in UpdateNodeType.
     unsigned NumResultsToAdd =
-        std::min(InstInfo.Operands.NumDefs, Inst.getNumResults());
+        std::min(InstInfo.Operands.NumDefs, getNumResults());
     for (unsigned ResNo = 0; ResNo != NumResultsToAdd; ++ResNo)
-      MadeChange |= UpdateNodeTypeFromInst(ResNo, Inst.getResult(ResNo), TP);
+      MadeChange |=
+          UpdateNodeTypeFromInst(ResNo, InstInfo.Operands[ResNo].Rec, TP);
 
     // If the instruction has implicit defs, we apply the first one as a result.
     // FIXME: This sucks, it should apply all implicit defs.
@@ -2593,7 +2596,10 @@ bool TreePatternNode::ApplyTypeConstraints(TreePattern &TP, bool NotRegisters) {
       }
     }
 
-    unsigned NumResults = Inst.getNumResults();
+    unsigned NumResults = InstInfo.Operands.NumDefs;
+    while (NumResults &&
+           CDP.operandHasDefault(InstInfo.Operands[NumResults - 1].Rec))
+      --NumResults;
     unsigned NumFixedOperands = InstInfo.Operands.size();
 
     // If one or more operands with a default value appear at the end of the
@@ -3749,12 +3755,7 @@ static bool checkOperandClass(CGIOperandList::OperandInfo &OI,
 }
 
 void CodeGenDAGPatterns::parseInstructionPattern(CodeGenInstruction &CGI,
-                                                 const ListInit *Pat,
-                                                 DAGInstMap &DAGInsts) {
-
-  assert(!DAGInsts.count(CGI.TheDef) && "Instruction already parsed!");
-
-  // Parse the instruction.
+                                                 const ListInit *Pat) {
   TreePattern I(CGI.TheDef, Pat, true, *this);
 
   // InstInputs - Keep track of all of the inputs of the instruction, along
@@ -3925,12 +3926,11 @@ void CodeGenDAGPatterns::parseInstructionPattern(CodeGenInstruction &CGI,
     SrcPattern = Pattern;
   }
 
-  // Create and insert the instruction.
-  // FIXME: InstImpResults should not be part of DAGInstruction.
-  DAGInsts.try_emplace(I.getRecord(), std::move(Results), std::move(Operands),
-                       std::move(InstImpResults), SrcPattern, ResultPattern);
-
   LLVM_DEBUG(I.dump());
+
+  TreePattern SrcPat(CGI.TheDef, SrcPattern, /*isInput=*/true, *this);
+  TreePattern ResultPat(CGI.TheDef, ResultPattern, /*isInput=*/false, *this);
+  ParseOnePattern(CGI.TheDef, SrcPat, ResultPat, InstImpResults);
 }
 
 /// ParseInstructions - Parse all of the instructions, inlining and resolving
@@ -3938,55 +3938,22 @@ void CodeGenDAGPatterns::parseInstructionPattern(CodeGenInstruction &CGI,
 /// resolved instructions.
 void CodeGenDAGPatterns::ParseInstructions() {
   for (const Record *Instr : Records.getAllDerivedDefinitions("Instruction")) {
-    const ListInit *LI = nullptr;
+    if (Instr->isValueUnset("Pattern"))
+      continue;
 
-    if (isa<ListInit>(Instr->getValueInit("Pattern")))
-      LI = Instr->getValueAsListInit("Pattern");
+    // A pattern which references the null_frag operator is as-if no pattern
+    // were specified. Normally this is from a multiclass expansion with a
+    // SDPatternOperator passed in as null_frag.
+    const ListInit *LI = Instr->getValueAsListInit("Pattern");
+    if (LI->empty() || hasNullFragReference(LI))
+      continue;
 
-    // If there is no pattern, only collect minimal information about the
-    // instruction for its operand list.  We have to assume that there is one
-    // result, as we have no detailed info. A pattern which references the
-    // null_frag operator is as-if no pattern were specified. Normally this
-    // is from a multiclass expansion w/ a SDPatternOperator passed in as
-    // null_frag.
-    if (!LI || LI->empty() || hasNullFragReference(LI)) {
-      std::vector<const Record *> Results;
-      std::vector<const Record *> Operands;
-
-      CodeGenInstruction &InstInfo = Target.getInstruction(Instr);
-
-      if (InstInfo.Operands.size() != 0) {
-        for (unsigned j = 0, e = InstInfo.Operands.NumDefs; j < e; ++j)
-          Results.push_back(InstInfo.Operands[j].Rec);
-
-        // The rest are inputs.
-        for (unsigned j = InstInfo.Operands.NumDefs,
-                      e = InstInfo.Operands.size();
-             j < e; ++j)
-          Operands.push_back(InstInfo.Operands[j].Rec);
-      }
-
-      // Create and insert the instruction.
-      Instructions.try_emplace(Instr, std::move(Results), std::move(Operands),
-                               std::vector<const Record *>());
-      continue; // no pattern.
-    }
-
-    CodeGenInstruction &CGI = Target.getInstruction(Instr);
-    parseInstructionPattern(CGI, LI, Instructions);
+    parseInstructionPattern(Target.getInstruction(Instr), LI);
   }
 
-  // If we can, convert the instructions to be patterns that are matched!
-  for (const auto &[Instr, TheInst] : Instructions) {
-    TreePatternNodePtr SrcPattern = TheInst.getSrcPattern();
-    TreePatternNodePtr ResultPattern = TheInst.getResultPattern();
-
-    if (SrcPattern && ResultPattern) {
-      TreePattern Pattern(Instr, SrcPattern, true, *this);
-      TreePattern Result(Instr, ResultPattern, false, *this);
-      ParseOnePattern(Instr, Pattern, Result, TheInst.getImpResults());
-    }
-  }
+  stable_sort(PatternsToMatch, [](const auto &LHS, const auto &RHS) {
+    return LessRecordByID()(LHS.getSrcRecord(), RHS.getSrcRecord());
+  });
 }
 
 typedef std::pair<TreePatternNode *, unsigned> NameRecord;

@@ -782,7 +782,6 @@ void MatcherGen::EmitResultInstructionAsOperand(
   const Record *Op = N.getOperator();
   const CodeGenTarget &CGT = CGP.getTargetInfo();
   CodeGenInstruction &II = CGT.getInstruction(Op);
-  const DAGInstruction &Inst = CGP.getInstruction(Op);
 
   bool isRoot = &N == &Pattern.getDstPattern();
 
@@ -800,7 +799,9 @@ void MatcherGen::EmitResultInstructionAsOperand(
 
   // NumResults - This is the number of results produced by the instruction in
   // the "outs" list.
-  unsigned NumResults = Inst.getNumResults();
+  unsigned NumResults = II.Operands.NumDefs;
+  while (NumResults && CGP.operandHasDefault(II.Operands[NumResults - 1].Rec))
+    --NumResults;
 
   // Number of operands we know the output instruction must have. If it is
   // variadic, we could have more operands.
