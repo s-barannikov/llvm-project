@@ -101,8 +101,6 @@ bool ARMSelectionDAGInfo::isTargetMemoryOpcode(unsigned Opcode) const {
 void ARMSelectionDAGInfo::verifyTargetNode(const SelectionDAG &DAG,
                                            const SDNode *N) const {
   switch (N->getOpcode()) {
-  default:
-    break;
   case ARMISD::WIN__DBZCHK:
     // invalid number of results; expected 2, got 1
   case ARMISD::WIN__CHKSTK:
@@ -111,6 +109,12 @@ void ARMSelectionDAGInfo::verifyTargetNode(const SelectionDAG &DAG,
     // invalid number of operands; expected 6, got 5
   case ARMISD::MEMCPY:
     // invalid number of operands; expected 5, got 4
+  case ARMISD::VMOVIMM:
+    // operand #0 must have type i32, but has type i16
+  case ARMISD::VMOVRRD:
+    // operand #0 must have type f64, but has type v1i64
+  case ARMISD::VBSP:
+    // result #0 must have type v8i16 (same as operand #2), but has type v4i32
     return;
   }
 

@@ -44,6 +44,9 @@ public:
 
   const char *getTargetNodeName(unsigned Opcode) const override;
 
+  void verifyTargetNode(const SelectionDAG &DAG,
+                        const SDNode *N) const override;
+
   SDValue EmitTargetCodeForMemcpy(SelectionDAG &DAG, const SDLoc &DL,
                                   SDValue Chain, SDValue Dst, SDValue Src,
                                   SDValue Size, Align Alignment,

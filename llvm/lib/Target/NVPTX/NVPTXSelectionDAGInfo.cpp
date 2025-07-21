@@ -73,6 +73,8 @@ void NVPTXSelectionDAGInfo::verifyTargetNode(const SelectionDAG &DAG,
     // invalid number of results; expected 3, got 1
   case NVPTXISD::BrxEnd:
     // invalid number of results; expected 1, got 2
+  case NVPTXISD::BFI:
+    // result #0 must have type v4i8 (same as operand #1), but has type i32
     return;
   }
 

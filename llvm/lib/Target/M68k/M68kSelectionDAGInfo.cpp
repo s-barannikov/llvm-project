@@ -17,3 +17,19 @@ M68kSelectionDAGInfo::M68kSelectionDAGInfo()
     : SelectionDAGGenTargetInfo(M68kGenSDNodeInfo) {}
 
 M68kSelectionDAGInfo::~M68kSelectionDAGInfo() = default;
+
+void M68kSelectionDAGInfo::verifyTargetNode(const SelectionDAG &DAG,
+                                            const SDNode *N) const {
+  switch (N->getOpcode()) {
+  case M68kISD::ADD:
+    // result #1 must have type i8, but has type i32
+  case M68kISD::SETCC:
+    // operand #1 must have type i8, but has type i32
+  case M68kISD::ADDX:
+  case M68kISD::SUBX:
+    // result #1 must have type i8 (same as operand #2), but has type i32
+    return;
+  }
+
+  SelectionDAGGenTargetInfo::verifyTargetNode(DAG, N);
+}

@@ -52,7 +52,8 @@ struct SDTypeConstraint {
   SDTC Kind;
   uint8_t OpNo;
   uint8_t OtherOpNo;
-  MVT::SimpleValueType VT;
+  uint8_t NumHwModes;
+  uint16_t VT;
 };
 
 using SDNodeTSFlags = uint32_t;
@@ -76,12 +77,15 @@ class SDNodeInfo final {
   unsigned NumOpcodes;
   const SDNodeDesc *Descs;
   StringTable Names;
+  const std::pair<uint8_t, MVT::SimpleValueType> *VTs;
   const SDTypeConstraint *Constraints;
 
 public:
   constexpr SDNodeInfo(unsigned NumOpcodes, const SDNodeDesc *Descs,
-                       StringTable Names, const SDTypeConstraint *Constraints)
-      : NumOpcodes(NumOpcodes), Descs(Descs), Names(Names),
+                       StringTable Names,
+                       const std::pair<uint8_t, MVT::SimpleValueType> *VTs,
+                       const SDTypeConstraint *Constraints)
+      : NumOpcodes(NumOpcodes), Descs(Descs), Names(Names), VTs(VTs),
         Constraints(Constraints) {}
 
   /// Returns true if there is a generated description for a node with the given

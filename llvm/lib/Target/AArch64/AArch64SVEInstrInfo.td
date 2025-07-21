@@ -473,7 +473,11 @@ def SDT_AArch64Arith_Unpred : SDTypeProfile<1, 2, [
 // Unpredicated vector instructions
 def AArch64bic_node : SDNode<"AArch64ISD::BIC",  SDT_AArch64Arith_Unpred>;
 
-def SDT_AArch64addw : SDTypeProfile<1, 2, [SDTCisVec<0>, SDTCisVec<1>]>;
+def SDT_AArch64addw : SDTypeProfile<1, 2, [
+  SDTCisVec<0>, SDTCisInt<0>,
+  SDTCisSameAs<1, 0>,
+  SDTCisVec<2>, SDTCisInt<2>, SDTCisSameSizeAs<2, 1>
+]>;
 
 // Wide adds
 def AArch64saddwt : SDNode<"AArch64ISD::SADDWT", SDT_AArch64addw>;

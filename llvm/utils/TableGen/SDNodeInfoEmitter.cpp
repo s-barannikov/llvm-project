@@ -198,15 +198,23 @@ static StringRef getTypeConstraintKindName(SDTypeConstraint::KindTy Kind) {
 #undef CASE
 }
 
-static void emitTypeConstraint(raw_ostream &OS, SDTypeConstraint C) {
+static void
+emitTypeConstraint(raw_ostream &OS, SDTypeConstraint C,
+                   const std::map<ValueTypeByHwMode, unsigned> &VTTable) {
   unsigned OtherOpNo = 0;
+  unsigned NumHwModes = 0;
+  unsigned VTOffset = 0;
   MVT VT;
 
   switch (C.ConstraintType) {
   case SDTypeConstraint::SDTCisVT:
   case SDTypeConstraint::SDTCVecEltisVT:
-    if (C.VVT.isSimple())
+    if (C.VVT.isSimple()) {
       VT = C.VVT.getSimple();
+    } else if (!C.VVT.empty()) {
+      NumHwModes = C.VVT.size();
+      VTOffset = VTTable.at(C.VVT);
+    }
     break;
   case SDTypeConstraint::SDTCisPtrTy:
   case SDTypeConstraint::SDTCisInt:
@@ -225,10 +233,16 @@ static void emitTypeConstraint(raw_ostream &OS, SDTypeConstraint C) {
   }
 
   StringRef KindName = getTypeConstraintKindName(C.ConstraintType);
-  StringRef VTName = VT.SimpleTy == MVT::INVALID_SIMPLE_VALUE_TYPE
-                         ? "MVT::INVALID_SIMPLE_VALUE_TYPE"
-                         : getEnumName(VT.SimpleTy);
-  OS << formatv("{{{}, {}, {}, {}}", KindName, C.OperandNo, OtherOpNo, VTName);
+  OS << '{' << KindName << ", " << C.OperandNo << ", " << OtherOpNo << ", "
+     << NumHwModes << ", ";
+  if (NumHwModes) {
+    OS << VTOffset;
+  } else {
+    OS << (VT == MVT::INVALID_SIMPLE_VALUE_TYPE
+               ? "MVT::INVALID_SIMPLE_VALUE_TYPE"
+               : getEnumName(VT.SimpleTy));
+  }
+  OS << '}';
 }
 
 std::vector<std::pair<unsigned, unsigned>>
@@ -239,6 +253,8 @@ SDNodeInfoEmitter::emitTypeConstraints(raw_ostream &OS) const {
 
   std::vector<std::pair<unsigned, unsigned>> ConstraintOffsetsAndCounts;
   ConstraintOffsetsAndCounts.reserve(NodesByName.size());
+
+  std::map<ValueTypeByHwMode, unsigned> VTOffsets;
 
   SmallVector<StringRef> SkippedNodes;
   for (const auto &[EnumName, Nodes] : NodesByName) {
@@ -255,6 +271,13 @@ SDNodeInfoEmitter::emitTypeConstraints(raw_ostream &OS) const {
       continue;
     }
 
+    for (const SDTypeConstraint &C : Constraints) {
+      if (C.ConstraintType == SDTypeConstraint::SDTCisVT ||
+          C.ConstraintType == SDTypeConstraint::SDTCVecEltisVT)
+        if (!C.VVT.isSimple() && !C.VVT.empty())
+          VTOffsets.try_emplace(C.VVT);
+    }
+
     // Don't add empty sequences to the table. This slightly simplifies
     // the implementation and makes the output less confusing if the table
     // ends up empty.
@@ -269,9 +292,25 @@ SDNodeInfoEmitter::emitTypeConstraints(raw_ostream &OS) const {
 
   ConstraintTable.layout();
 
+  OS << "static const std::pair<uint8_t, MVT::SimpleValueType> "
+     << Target.getName() << "VTs[] = {\n";
+  unsigned VTOffset = 0;
+  for (auto &[VTs, Offset] : VTOffsets) {
+    OS << "  ";
+    for (auto [Mode, VT] : VTs)
+      OS << '{' << Mode << ", " << getEnumName(VT.SimpleTy) << "}, ";
+    OS << '\n';
+    Offset = VTOffset;
+    VTOffset += VTs.size();
+  }
+  if (VTOffsets.empty())
+    OS << "  {0, MVT::INVALID_SIMPLE_VALUE_TYPE},\n";
+  OS << "};\n\n";
+
   OS << "static const SDTypeConstraint " << Target.getName()
      << "SDTypeConstraints[] = {\n";
-  ConstraintTable.emit(OS, emitTypeConstraint);
+  ConstraintTable.emit(OS, std::bind(emitTypeConstraint, std::placeholders::_1,
+                                     std::placeholders::_2, VTOffsets));
   OS << "};\n\n";
 
   for (const auto &[EnumName, Nodes] : NodesByName) {
@@ -343,7 +382,7 @@ void SDNodeInfoEmitter::emitDescs(raw_ostream &OS) const {
 
   OS << formatv("static const SDNodeInfo {0}GenSDNodeInfo(\n"
                 "    /*NumOpcodes=*/{1}, {0}SDNodeDescs,\n"
-                "    {0}SDNodeNames, {0}SDTypeConstraints);\n\n",
+                "    {0}SDNodeNames, {0}VTs, {0}SDTypeConstraints);\n\n",
                 TargetName, NodesByName.size());
 
   OS << "} // namespace llvm\n\n";

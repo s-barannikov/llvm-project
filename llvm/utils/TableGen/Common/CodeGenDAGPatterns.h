@@ -377,7 +377,6 @@ struct SDTypeConstraint {
   unsigned OtherOperandNo;
 
   // The VT for SDTCisVT and SDTCVecEltisVT.
-  // Must not be in the union because it has a non-trivial destructor.
   ValueTypeByHwMode VVT;
 
   /// ApplyTypeConstraint - Given a node in a pattern, apply this type

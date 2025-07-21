@@ -21,6 +21,9 @@ public:
   SparcSelectionDAGInfo();
 
   ~SparcSelectionDAGInfo() override;
+
+  void verifyTargetNode(const SelectionDAG &DAG,
+                        const SDNode *N) const override;
 };
 
 } // namespace llvm

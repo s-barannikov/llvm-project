@@ -30,9 +30,14 @@ LoongArchSelectionDAGInfo::getTargetNodeName(unsigned Opcode) const {
 
 void LoongArchSelectionDAGInfo::verifyTargetNode(const SelectionDAG &DAG,
                                                  const SDNode *N) const {
-  if (N->getOpcode() == LoongArchISD::VLDREPL) {
+  switch (N->getOpcode()) {
+  case LoongArchISD::VLDREPL:
     // invalid number of operands; expected 2, got 3
+  case LoongArchISD::VILVL:
+  case LoongArchISD::VILVH:
+    // operand #0 must have type v8i16 (same as operand #1), but has type v16i8
     return;
   }
+
   SelectionDAGGenTargetInfo::verifyTargetNode(DAG, N);
 }

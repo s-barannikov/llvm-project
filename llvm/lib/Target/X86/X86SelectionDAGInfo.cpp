@@ -70,6 +70,20 @@ void X86SelectionDAGInfo::verifyTargetNode(const SelectionDAG &DAG,
   switch (N->getOpcode()) {
   default:
     break;
+  case X86ISD::ADD:
+    // result #1 must have type i32, but has type i128
+  case X86ISD::CMPMM:
+    // operand #2 must have type i8, but has type i32
+  case X86ISD::CALL:
+  case X86ISD::NT_BRIND:
+    // operand #1 must have type i32 (iPTR), but has type i64
+  case X86ISD::CMPCCXADD:
+    // operand #4 must have type i8, but has type i32
+  case X86ISD::FSETCCM:
+    // operand #2 must have type i8, but has type i32
+  case X86ISD::EXTRQI:
+  case X86ISD::INSERTQI:
+    // result #0 must have type v2i64, but has type v16i8
   case X86ISD::VP2INTERSECT:
     // invalid number of results; expected 1, got 2
   case X86ISD::VTRUNCSTOREUS:
@@ -83,6 +97,15 @@ void X86SelectionDAGInfo::verifyTargetNode(const SelectionDAG &DAG,
     // invalid number of operands; expected 1, got 2
   case X86ISD::CMPMM_SAE:
     // invalid number of operands; expected 4, got 5
+  case X86ISD::VPERMILPV:
+    // operand #1 must have an integer type, but has type v4f64
+  case X86ISD::TC_RETURN:
+    // operand #1 must have type i32 (iPTR), but has type i64
+  case X86ISD::VPDPBUSD:
+    // operand #0 must have type v16i8 (same as operand #2), but has type v4i32
+  case X86ISD::VPDPWSSD:
+    // operand #0 must have type v32i16 (same as operand #2),
+    // but has type v16i32
     return;
   }
 

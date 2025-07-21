@@ -16,4 +16,17 @@ using namespace llvm;
 SparcSelectionDAGInfo::SparcSelectionDAGInfo()
     : SelectionDAGGenTargetInfo(SparcGenSDNodeInfo) {}
 
+void SparcSelectionDAGInfo::verifyTargetNode(const SelectionDAG &DAG,
+                                             const SDNode *N) const {
+  switch (N->getOpcode()) {
+  case SPISD::CALL:
+  case SPISD::TAIL_CALL:
+  case SPISD::TLS_CALL:
+    // operand #1 must have type i32, but has type i64
+    return;
+  }
+
+  SelectionDAGGenTargetInfo::verifyTargetNode(DAG, N);
+}
+
 SparcSelectionDAGInfo::~SparcSelectionDAGInfo() = default;

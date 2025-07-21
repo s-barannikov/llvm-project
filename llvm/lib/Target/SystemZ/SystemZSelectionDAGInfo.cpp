@@ -33,6 +33,17 @@ const char *SystemZSelectionDAGInfo::getTargetNodeName(unsigned Opcode) const {
   return SelectionDAGGenTargetInfo::getTargetNodeName(Opcode);
 }
 
+void SystemZSelectionDAGInfo::verifyTargetNode(const SelectionDAG &DAG,
+                                               const SDNode *N) const {
+  switch (N->getOpcode()) {
+  case SystemZISD::VSUM:
+    // operand #0 must have type v16i8 (same as operand #1), but has type v4i32
+    return;
+  }
+
+  SelectionDAGGenTargetInfo::verifyTargetNode(DAG, N);
+}
+
 static unsigned getMemMemLenAdj(unsigned Op) {
   return Op == SystemZISD::MEMSET_MVC ? 2 : 1;
 }

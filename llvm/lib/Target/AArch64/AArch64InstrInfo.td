@@ -1101,7 +1101,8 @@ def AArch64st2g : SDNode<"AArch64ISD::ST2G", SDT_AArch64SETTAG, [SDNPHasChain, S
 def AArch64stz2g : SDNode<"AArch64ISD::STZ2G", SDT_AArch64SETTAG, [SDNPHasChain, SDNPMayStore, SDNPMemOperand]>;
 
 def SDT_AArch64unpk : SDTypeProfile<1, 1, [
-    SDTCisInt<0>, SDTCisInt<1>, SDTCisOpSmallerThanOp<1, 0>
+  SDTCisVec<0>, SDTCisInt<0>, SDTCisVec<1>, SDTCisInt<1>,
+  SDTCisSameSizeAs<1, 0>, SDTCisOpSmallerThanOp<1, 0>
 ]>;
 def AArch64sunpkhi : SDNode<"AArch64ISD::SUNPKHI", SDT_AArch64unpk>;
 def AArch64sunpklo : SDNode<"AArch64ISD::SUNPKLO", SDT_AArch64unpk>;
@@ -1144,7 +1145,11 @@ def AArch64msrr : SDNode<"AArch64ISD::MSRR",
                                                SDTCisVT<2, i64>]>,
                           [SDNPHasChain]>;
 
-def SD_AArch64rshrnb : SDTypeProfile<1, 2, [SDTCisVec<0>, SDTCisVec<1>, SDTCisInt<2>]>;
+def SD_AArch64rshrnb : SDTypeProfile<1, 2, [
+  SDTCisVec<0>, SDTCisInt<0>,
+  SDTCisVec<1>, SDTCisInt<1>, SDTCisSameSizeAs<1, 0>,
+  SDTCisVT<2, i32>
+]>;
 // Vector narrowing shift by immediate (bottom)
 def AArch64rshrnb : SDNode<"AArch64ISD::RSHRNB_I", SD_AArch64rshrnb>;
 def AArch64rshrnb_pf : PatFrags<(ops node:$rs, node:$i),

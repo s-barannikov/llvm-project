@@ -62,6 +62,18 @@ void PPCSelectionDAGInfo::verifyTargetNode(const SelectionDAG &DAG,
     // invalid number of operands; expected 2, got 3
   case PPCISD::ST_VSR_SCAL_INT:
     // invalid number of operands; expected 4, got 5
+  case PPCISD::XXPERM:
+    // operand #1 must have type v2f64, but has type v16i8
+  case PPCISD::PAIR_BUILD:
+    // operand #1 must have type v4i32, but has type v16i8
+  case PPCISD::ACC_BUILD:
+    // operand #3 must have type v4i32, but has type v16i8
+  case PPCISD::FP_EXTEND_HALF:
+    // operand #1 must have type i64 (iPTR), but has type i32
+  case PPCISD::VECSHL:
+    // operand #2 must have type i64 (iPTR), but has type i32
+  case PPCISD::FSEL:
+    // result #0 must have type f64 (same as operand #1), but has type f32
     return;
   }
 
