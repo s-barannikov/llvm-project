@@ -356,10 +356,13 @@ void InstructionEncoding::parseFixedLenOperands(const BitsInit &Bits) {
       }
 
       // Decode each of the sub-ops separately.
-      for (auto [SubOpName, SubOp] :
-           zip_equal(Op.SubOpNames, Op.MIOperandInfo->getArgs())) {
+      unsigned SubOpIdx = 0;
+      for (auto [SubOpName, SubOp, EncoderMethod] :
+           zip_equal(Op.SubOpNames, Op.MIOperandInfo->getArgs(), Op.EncoderMethodNames)) {
         const Record *SubOpRec = cast<DefInit>(SubOp)->getDef();
         OperandInfo SubOpInfo = getOpInfo(SubOpRec);
+        SubOpInfo.EncoderMethod = EncoderMethod;
+        SubOpInfo.OperandIndex = Op.MIOperandNo + SubOpIdx++;
         addOneOperandFields(EncodingDef, Bits, TiedNames, SubOpRec, SubOpName,
                             SubOpInfo);
         Operands.push_back(std::move(SubOpInfo));
@@ -372,7 +375,7 @@ void InstructionEncoding::parseFixedLenOperands(const BitsInit &Bits) {
     if (Op.MIOperandInfo && OpInfo.Decoder.empty()) {
       // If we have sub-ops, we'd better have a custom decoder.
       // (Otherwise we don't know how to populate them properly...)
-      if (Op.MIOperandInfo->getNumArgs()) {
+      if (DecoderMethod.empty() && Op.MIOperandInfo->getNumArgs()) {
         PrintError(EncodingDef,
                    "DecoderEmitter: operand \"" + Op.Name +
                        "\" has non-empty MIOperandInfo, but doesn't "
@@ -382,6 +385,8 @@ void InstructionEncoding::parseFixedLenOperands(const BitsInit &Bits) {
       }
     }
 
+    OpInfo.EncoderMethod = Op.EncoderMethodNames[0];
+    OpInfo.OperandIndex = Op.MIOperandNo;
     addOneOperandFields(EncodingDef, Bits, TiedNames, Op.Rec, Op.Name, OpInfo);
     Operands.push_back(std::move(OpInfo));
   }
@@ -406,14 +411,10 @@ InstructionEncoding::InstructionEncoding(const Record *EncodingDef,
   if (const auto *DI = dyn_cast<DagInit>(InstField->getValue())) {
     VarLenInst VLI(DI, InstField);
     parseVarLenEncoding(VLI);
-    // If the encoding has a custom decoder, don't bother parsing the operands.
-    if (DecoderMethod.empty())
       parseVarLenOperands(VLI);
   } else {
     const auto *BI = cast<BitsInit>(InstField->getValue());
     parseFixedLenEncoding(*BI);
-    // If the encoding has a custom decoder, don't bother parsing the operands.
-    if (DecoderMethod.empty())
       parseFixedLenOperands(*BI);
   }
 

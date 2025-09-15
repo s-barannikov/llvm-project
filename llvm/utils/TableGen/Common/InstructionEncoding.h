@@ -40,9 +40,11 @@ struct EncodingField {
 };
 
 struct OperandInfo {
+  unsigned OperandIndex;
   StringRef Name;
   bool HasNoEncoding = false;
   std::vector<EncodingField> Fields;
+  StringRef EncoderMethod;
   std::string Decoder;
   bool HasCompleteDecoder;
   std::optional<uint64_t> InitValue;

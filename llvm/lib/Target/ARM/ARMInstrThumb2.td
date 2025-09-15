@@ -3925,7 +3925,7 @@ def : T2Pat<(stlex_2 (and GPR:$Rt, 0xffff), addr_offset_none:$addr),
 let Defs =
   [ R0,  R1,  R2,  R3,  R4,  R5,  R6,  R7,  R8,  R9,  R10, R11, R12, LR, CPSR,
     Q0, Q1, Q2, Q3, Q8, Q9, Q10, Q11, Q12, Q13, Q14, Q15],
-  hasSideEffects = 1, isBarrier = 1, isCodeGenOnly = 1, Size = 12,
+  hasSideEffects = 1, isBarrier = 1, isPseudo = 1, isCodeGenOnly = 1, Size = 12,
   usesCustomInserter = 1 in {
   def t2Int_eh_sjlj_setjmp : Thumb2XI<(outs), (ins tGPR:$src, tGPR:$val),
                                AddrModeNone, 0, NoItinerary, "", "",
@@ -3936,7 +3936,7 @@ let Defs =
 // This gets lowered to an instruction sequence of 12 bytes
 let Defs =
   [ R0,  R1,  R2,  R3,  R4,  R5,  R6,  R7,  R8,  R9,  R10, R11, R12, LR, CPSR ],
-  hasSideEffects = 1, isBarrier = 1, isCodeGenOnly = 1, Size = 12,
+  hasSideEffects = 1, isBarrier = 1, isPseudo = 1, isCodeGenOnly = 1, Size = 12,
   usesCustomInserter = 1 in {
   def t2Int_eh_sjlj_setjmp_nofp : Thumb2XI<(outs), (ins tGPR:$src, tGPR:$val),
                                AddrModeNone, 0, NoItinerary, "", "",

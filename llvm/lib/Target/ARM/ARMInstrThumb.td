@@ -1537,16 +1537,16 @@ def tTPsoft : tPseudoInst<(outs), (ins), 4, IIC_Br,
 // $val is a scratch register for our use.
 // This gets lowered to an instruction sequence of 12 bytes
 let Defs = [ R0,  R1,  R2,  R3,  R4,  R5,  R6,  R7, R12, CPSR ],
-    hasSideEffects = 1, isBarrier = 1, isCodeGenOnly = 1, Size = 12,
-    usesCustomInserter = 1 in
+    hasSideEffects = 1, isBarrier = 1, isPseudo = 1, isCodeGenOnly = 1,
+    Size = 12, usesCustomInserter = 1 in
 def tInt_eh_sjlj_setjmp : ThumbXI<(outs),(ins tGPR:$src, tGPR:$val),
                                   AddrModeNone, 0, NoItinerary, "","",
                           [(set R0, (ARMeh_sjlj_setjmp tGPR:$src, tGPR:$val))]>;
 
 // This gets lowered to an instruction sequence of 10 bytes
 // FIXME: Non-IOS version(s)
-let isBarrier = 1, hasSideEffects = 1, isTerminator = 1, isCodeGenOnly = 1,
-    Size = 10, Defs = [ R7, LR, SP ] in
+let isBarrier = 1, hasSideEffects = 1, isTerminator = 1, isPseudo = 1,
+    isCodeGenOnly = 1, Size = 10, Defs = [ R7, LR, SP ] in
 def tInt_eh_sjlj_longjmp : XI<(outs), (ins tGPR:$src, tGPR:$scratch),
                               AddrModeNone, 0, IndexModeNone,
                               Pseudo, NoItinerary, "", "",
@@ -1555,8 +1555,8 @@ def tInt_eh_sjlj_longjmp : XI<(outs), (ins tGPR:$src, tGPR:$scratch),
 
 // This gets lowered to an instruction sequence of 12 bytes
 // (Windows is Thumb2-only)
-let isBarrier = 1, hasSideEffects = 1, isTerminator = 1, isCodeGenOnly = 1,
-    Size = 12, Defs = [ R11, LR, SP ] in
+let isBarrier = 1, hasSideEffects = 1, isTerminator = 1, isPseudo = 1,
+    isCodeGenOnly = 1, Size = 12, Defs = [ R11, LR, SP ] in
 def tInt_WIN_eh_sjlj_longjmp
   : XI<(outs), (ins GPR:$src, GPR:$scratch), AddrModeNone, 0, IndexModeNone,
        Pseudo, NoItinerary, "", "", [(ARMeh_sjlj_longjmp GPR:$src, GPR:$scratch)]>,

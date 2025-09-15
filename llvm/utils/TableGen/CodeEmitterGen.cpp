@@ -26,6 +26,7 @@
 #include "Common/CodeGenInstruction.h"
 #include "Common/CodeGenTarget.h"
 #include "Common/InfoByHwMode.h"
+#include "Common/InstructionEncoding.h"
 #include "Common/VarLenCodeEmitterGen.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -59,18 +60,20 @@ public:
 
 private:
   int getVariableBit(const std::string &VarName, const BitsInit *BI, int Bit);
-  std::pair<std::string, std::string> getInstructionCases(const Record *R);
-  void addInstructionCasesForEncoding(const Record *R,
-                                      const Record *EncodingDef,
+  std::pair<std::string, std::string> getInstructionCases(
+      const CodeGenInstruction *Inst,
+      const std::map<unsigned, DenseMap<unsigned, InstructionEncoding>>
+          &EncodingsByHwMode);
+  void addInstructionCasesForEncoding(const InstructionEncoding &Encoding,
                                       std::string &Case,
                                       std::string &BitOffsetCase);
-  bool addCodeToMergeInOperand(const Record *R, const BitsInit *BI,
-                               const std::string &VarName, std::string &Case,
+  void addCodeToMergeInOperand(const OperandInfo &Op, std::string &Case,
                                std::string &BitOffsetCase);
 
   void emitInstructionBaseValues(
       raw_ostream &O, ArrayRef<const CodeGenInstruction *> NumberedInstructions,
-      unsigned HwMode = DefaultMode);
+      unsigned HwMode,
+      const DenseMap<unsigned, InstructionEncoding> &Encodings);
   void
   emitCaseMap(raw_ostream &O,
               const std::map<std::string, std::vector<std::string>> &CaseMap);
@@ -97,54 +100,18 @@ int CodeEmitterGen::getVariableBit(const std::string &VarName,
 }
 
 // Returns true if it succeeds, false if an error.
-bool CodeEmitterGen::addCodeToMergeInOperand(const Record *R,
-                                             const BitsInit *BI,
-                                             const std::string &VarName,
+void CodeEmitterGen::addCodeToMergeInOperand(const OperandInfo &Op,
                                              std::string &Case,
                                              std::string &BitOffsetCase) {
-  CodeGenInstruction &CGI = Target.getInstruction(R);
-
-  // Determine if VarName actually contributes to the Inst encoding.
-  int Bit = BI->getNumBits() - 1;
-
-  // Scan for a bit that this contributed to.
-  for (; Bit >= 0;) {
-    if (getVariableBit(VarName, BI, Bit) != -1)
-      break;
-
-    --Bit;
-  }
-
-  // If we found no bits, ignore this value, otherwise emit the call to get the
-  // operand encoding.
-  if (Bit < 0)
-    return true;
-
-  // If the operand matches by name, reference according to that
-  // operand number. Non-matching operands are assumed to be in
-  // order.
-  unsigned OpIdx;
-  if (auto SubOp = CGI.Operands.findSubOperandAlias(VarName)) {
-    OpIdx = CGI.Operands[SubOp->first].MIOperandNo + SubOp->second;
-  } else if (auto MayBeOpIdx = CGI.Operands.findOperandNamed(VarName)) {
-    // Get the machine operand number for the indicated operand.
-    OpIdx = CGI.Operands[*MayBeOpIdx].MIOperandNo;
-  } else {
-    PrintError(R, Twine("No operand named ") + VarName + " in record " +
-                      R->getName());
-    return false;
-  }
-
-  std::pair<unsigned, unsigned> SO = CGI.Operands.getSubOperandNumber(OpIdx);
-  StringRef EncoderMethodName =
-      CGI.Operands[SO.first].EncoderMethodNames[SO.second];
+  StringRef EncoderMethodName = Op.EncoderMethod;
 
   if (UseAPInt)
     Case += "      op.clearAllBits();\n";
 
-  Case += "      // op: " + VarName + "\n";
+  Case += "      // op: " + Op.Name.str() + "\n";
 
   // If the source operand has a custom encoder, use it.
+  unsigned OpIdx = Op.OperandIndex;
   if (!EncoderMethodName.empty()) {
     raw_string_ostream CaseOS(Case);
     CaseOS << indent(6);
@@ -166,66 +133,16 @@ bool CodeEmitterGen::addCodeToMergeInOperand(const Record *R,
     Case += ");\n";
   }
 
-  // Precalculate the number of lits this variable contributes to in the
-  // operand. If there is a single lit (consecutive range of bits) we can use a
-  // destructive sequence on APInt that reduces memory allocations.
-  int NumOperandLits = 0;
-  for (int TmpBit = Bit; TmpBit >= 0;) {
-    int VarBit = getVariableBit(VarName, BI, TmpBit);
-
-    // If this bit isn't from a variable, skip it.
-    if (VarBit == -1) {
-      --TmpBit;
-      continue;
-    }
-
-    // Figure out the consecutive range of bits covered by this operand, in
-    // order to generate better encoding code.
-    int BeginVarBit = VarBit;
-    int N = 1;
-    for (--TmpBit; TmpBit >= 0;) {
-      VarBit = getVariableBit(VarName, BI, TmpBit);
-      if (VarBit == -1 || VarBit != (BeginVarBit - N))
-        break;
-      ++N;
-      --TmpBit;
-    }
-    ++NumOperandLits;
-  }
-
-  unsigned BitOffset = -1;
-  for (; Bit >= 0;) {
-    int VarBit = getVariableBit(VarName, BI, Bit);
-
-    // If this bit isn't from a variable, skip it.
-    if (VarBit == -1) {
-      --Bit;
-      continue;
-    }
-
-    // Figure out the consecutive range of bits covered by this operand, in
-    // order to generate better encoding code.
-    int BeginInstBit = Bit;
-    int BeginVarBit = VarBit;
-    int N = 1;
-    for (--Bit; Bit >= 0;) {
-      VarBit = getVariableBit(VarName, BI, Bit);
-      if (VarBit == -1 || VarBit != (BeginVarBit - N))
-        break;
-      ++N;
-      --Bit;
-    }
-
+  for (const EncodingField &Field : Op.fields()) {
     std::string MaskStr;
     int OpShift;
 
-    unsigned LoBit = BeginVarBit - N + 1;
-    unsigned HiBit = LoBit + N;
-    unsigned LoInstBit = BeginInstBit - N + 1;
-    BitOffset = LoInstBit;
+    unsigned LoBit = Field.Offset;
+    unsigned HiBit = LoBit + Field.Width;
+    unsigned LoInstBit = Field.Base;
     if (UseAPInt) {
       std::string ExtractStr;
-      if (N >= 64) {
+      if (Field.Width >= 64) {
         ExtractStr = "op.extractBits(" + itostr(HiBit - LoBit) + ", " +
                      itostr(LoBit) + ")";
         Case += "      Value.insertBits(" + ExtractStr + ", " +
@@ -237,13 +154,13 @@ bool CodeEmitterGen::addCodeToMergeInOperand(const Record *R,
                 itostr(LoInstBit) + ", " + itostr(HiBit - LoBit) + ");\n";
       }
     } else {
-      uint64_t OpMask = ~(uint64_t)0 >> (64 - N);
-      OpShift = BeginVarBit - N + 1;
+      uint64_t OpMask = ~(uint64_t)0 >> (64 - Field.Width);
+      OpShift = LoBit;
       OpMask <<= OpShift;
       MaskStr = "UINT64_C(" + utostr(OpMask) + ")";
-      OpShift = BeginInstBit - BeginVarBit;
+      OpShift = LoInstBit - LoBit;
 
-      if (NumOperandLits == 1) {
+      if (Op.fields().size() == 1) {
         Case += "      op &= " + MaskStr + ";\n";
         if (OpShift > 0) {
           Case += "      op <<= " + itostr(OpShift) + ";\n";
@@ -265,17 +182,19 @@ bool CodeEmitterGen::addCodeToMergeInOperand(const Record *R,
     }
   }
 
-  if (BitOffset != (unsigned)-1) {
-    BitOffsetCase += "      case " + utostr(OpIdx) + ":\n";
-    BitOffsetCase += "        // op: " + VarName + "\n";
-    BitOffsetCase += "        return " + utostr(BitOffset) + ";\n";
-  }
-
-  return true;
+  auto LessFieldByBase = [](const EncodingField &A, const EncodingField &B) {
+    return A.Base < B.Base;
+  };
+  auto I = min_element(Op.fields(), LessFieldByBase);
+  BitOffsetCase += "      case " + utostr(OpIdx) + ":\n";
+  BitOffsetCase += "        // op: " + Op.Name.str() + "\n";
+  BitOffsetCase += "        return " + utostr(I->Base) + ";\n";
 }
 
-std::pair<std::string, std::string>
-CodeEmitterGen::getInstructionCases(const Record *R) {
+std::pair<std::string, std::string> CodeEmitterGen::getInstructionCases(
+    const CodeGenInstruction *Inst,
+    const std::map<unsigned, DenseMap<unsigned, InstructionEncoding>>
+        &EncodingsByHwMode) {
   std::string Case, BitOffsetCase;
 
   auto Append = [&](const std::string &S) {
@@ -283,90 +202,81 @@ CodeEmitterGen::getInstructionCases(const Record *R) {
     BitOffsetCase += S;
   };
 
-  if (const Record *RV = R->getValueAsOptionalDef("EncodingInfos")) {
-    EncodingInfoByHwMode EBM(RV, CGH);
+  SmallVector<std::pair<unsigned, const InstructionEncoding *>, 4>
+      InstEncodings;
+  for (const auto &[HwMode, Encodings] : EncodingsByHwMode)
+    if (auto I = Encodings.find(Inst->EnumVal); I != Encodings.end())
+      InstEncodings.emplace_back(HwMode, &I->second);
 
-    // Invoke the interface to obtain the HwMode ID controlling the
-    // EncodingInfo for the current subtarget. This interface will
-    // mask off irrelevant HwMode IDs.
-    Append("      unsigned HwMode = "
-           "STI.getHwMode(MCSubtargetInfo::HwMode_EncodingInfo);\n");
-    Case += "      switch (HwMode) {\n";
-    Case += "      default: llvm_unreachable(\"Unknown hardware mode!\"); "
-            "break;\n";
-    for (auto &[ModeId, Encoding] : EBM) {
-      if (ModeId == DefaultMode) {
-        Case +=
-            "      case " + itostr(DefaultMode) + ": InstBitsByHw = InstBits";
-      } else {
-        Case += "      case " + itostr(ModeId) + ": InstBitsByHw = InstBits_" +
-                CGH.getMode(ModeId).Name.str();
-      }
-      Case += "; break;\n";
-    }
-    Case += "      };\n";
+  if (InstEncodings.empty())
+    return {std::move(Case), std::move(BitOffsetCase)};
 
-    // We need to remodify the 'Inst' value from the table we found above.
-    if (UseAPInt) {
-      int NumWords = APInt::getNumWords(BitWidth);
-      Case += "      Inst = APInt(" + itostr(BitWidth);
-      Case += ", ArrayRef(InstBitsByHw + TableIndex * " + itostr(NumWords) +
-              ", " + itostr(NumWords);
-      Case += "));\n";
-      Case += "      Value = Inst;\n";
-    } else {
-      Case += "      Value = InstBitsByHw[TableIndex];\n";
-    }
-
-    Append("      switch (HwMode) {\n");
-    Append("      default: llvm_unreachable(\"Unhandled HwMode\");\n");
-    for (auto &[ModeId, Encoding] : EBM) {
-      Append("      case " + itostr(ModeId) + ": {\n");
-      addInstructionCasesForEncoding(R, Encoding, Case, BitOffsetCase);
-      Append("      break;\n");
-      Append("      }\n");
-    }
-    Append("      }\n");
+  if (InstEncodings.size() == 1 && InstEncodings.front().first == DefaultMode) {
+    addInstructionCasesForEncoding(*InstEncodings.front().second, Case,
+                                   BitOffsetCase);
     return {std::move(Case), std::move(BitOffsetCase)};
   }
-  addInstructionCasesForEncoding(R, R, Case, BitOffsetCase);
+
+  // Invoke the interface to obtain the HwMode ID controlling the
+  // EncodingInfo for the current subtarget. This interface will
+  // mask off irrelevant HwMode IDs.
+  Append("      unsigned HwMode = "
+         "STI.getHwMode(MCSubtargetInfo::HwMode_EncodingInfo);\n");
+  Case += "      switch (HwMode) {\n";
+  Case += "      default: llvm_unreachable(\"Unknown hardware mode!\"); "
+          "break;\n";
+  for (unsigned ModeId : make_first_range(InstEncodings)) {
+    if (ModeId == DefaultMode) {
+      Case += "      case " + itostr(DefaultMode) + ": InstBitsByHw = InstBits";
+    } else {
+      Case += "      case " + itostr(ModeId) + ": InstBitsByHw = InstBits_" +
+              CGH.getMode(ModeId).Name.str();
+    }
+    Case += "; break;\n";
+  }
+  Case += "      };\n";
+
+  // We need to remodify the 'Inst' value from the table we found above.
+  if (UseAPInt) {
+    int NumWords = APInt::getNumWords(BitWidth);
+    Case += "      Inst = APInt(" + itostr(BitWidth);
+    Case += ", ArrayRef(InstBitsByHw + TableIndex * " + itostr(NumWords) +
+            ", " + itostr(NumWords);
+    Case += "));\n";
+    Case += "      Value = Inst;\n";
+  } else {
+    Case += "      Value = InstBitsByHw[TableIndex];\n";
+  }
+
+  Append("      switch (HwMode) {\n");
+  Append("      default: llvm_unreachable(\"Unhandled HwMode\");\n");
+  for (auto [ModeId, Encoding] : InstEncodings) {
+    Append("      case " + itostr(ModeId) + ": {\n");
+    addInstructionCasesForEncoding(*Encoding, Case, BitOffsetCase);
+    Append("      break;\n");
+    Append("      }\n");
+  }
+  Append("      }\n");
   return {std::move(Case), std::move(BitOffsetCase)};
 }
 
 void CodeEmitterGen::addInstructionCasesForEncoding(
-    const Record *R, const Record *EncodingDef, std::string &Case,
+    const InstructionEncoding &Encoding, std::string &Case,
     std::string &BitOffsetCase) {
-  const BitsInit *BI = EncodingDef->getValueAsBitsInit("Inst");
+  const Record *R = Encoding.getInstruction()->TheDef;
 
-  // Loop over all of the fields in the instruction, determining which are the
-  // operands to the instruction.
-  bool Success = true;
+  // Loop over all of the fields in the instruction.
   size_t OrigBitOffsetCaseSize = BitOffsetCase.size();
   BitOffsetCase += "      switch (OpNum) {\n";
   size_t BitOffsetCaseSizeBeforeLoop = BitOffsetCase.size();
-  for (const RecordVal &RV : EncodingDef->getValues()) {
-    // Ignore fixed fields in the record, we're looking for values like:
-    //    bits<5> RST = { ?, ?, ?, ?, ? };
-    if (RV.isNonconcreteOK() || RV.getValue()->isComplete())
-      continue;
-
-    Success &=
-        addCodeToMergeInOperand(R, BI, RV.getName().str(), Case, BitOffsetCase);
-  }
+  for (const OperandInfo &Op : Encoding.getOperands())
+    if (!Op.fields().empty())
+      addCodeToMergeInOperand(Op, Case, BitOffsetCase);
   // Avoid empty switches.
   if (BitOffsetCase.size() == BitOffsetCaseSizeBeforeLoop)
     BitOffsetCase.resize(OrigBitOffsetCaseSize);
   else
     BitOffsetCase += "      }\n";
-
-  if (!Success) {
-    // Dump the record, so we can see what's going on...
-    std::string E;
-    raw_string_ostream S(E);
-    S << "Dumping record for previous error:\n";
-    S << *R;
-    PrintNote(E);
-  }
 
   StringRef PostEmitter = R->getValueAsString("PostEncoderMethod");
   if (!PostEmitter.empty()) {
@@ -385,7 +295,7 @@ static void emitInstBits(raw_ostream &OS, const APInt &Bits) {
 
 void CodeEmitterGen::emitInstructionBaseValues(
     raw_ostream &O, ArrayRef<const CodeGenInstruction *> NumberedInstructions,
-    unsigned HwMode) {
+    unsigned HwMode, const DenseMap<unsigned, InstructionEncoding> &Encodings) {
   if (HwMode == DefaultMode)
     O << "  static const uint64_t InstBits[] = {\n";
   else
@@ -394,29 +304,19 @@ void CodeEmitterGen::emitInstructionBaseValues(
 
   for (const CodeGenInstruction *CGI : NumberedInstructions) {
     const Record *R = CGI->TheDef;
-    const Record *EncodingDef = R;
-    if (const Record *RV = R->getValueAsOptionalDef("EncodingInfos")) {
-      EncodingInfoByHwMode EBM(RV, CGH);
-      if (EBM.hasMode(HwMode)) {
-        EncodingDef = EBM.get(HwMode);
-      } else {
-        // If the HwMode does not match, then Encoding '0'
-        // should be generated.
-        APInt Value(BitWidth, 0);
-        O << "    ";
-        emitInstBits(O, Value);
-        O << "," << '\t' << "// " << R->getName() << "\n";
-        continue;
-      }
+    auto I = Encodings.find(CGI->EnumVal);
+    if (I == Encodings.end()) {
+      // If the HwMode does not match, then Encoding '0'
+      // should be generated.
+      APInt Value(BitWidth, 0);
+      O << "    ";
+      emitInstBits(O, Value);
+      O << "," << '\t' << "// " << R->getName() << "\n";
+      continue;
     }
-    const BitsInit *BI = EncodingDef->getValueAsBitsInit("Inst");
 
     // Start by filling in fixed values.
-    APInt Value(BitWidth, 0);
-    for (unsigned I = 0, E = BI->getNumBits(); I != E; ++I) {
-      if (const auto *B = dyn_cast<BitInit>(BI->getBit(I)); B && B->getValue())
-        Value.setBit(I);
-    }
+    APInt Value = I->second.getInstBits().One.zext(BitWidth);
     O << "    ";
     emitInstBits(O, Value);
     O << "," << '\t' << "// " << R->getName() << "\n";
@@ -458,24 +358,27 @@ void CodeEmitterGen::run(raw_ostream &O) {
     emitVarLenCodeEmitter(RK, O);
     return;
   }
-  // The set of HwModes used by instruction encodings.
-  std::set<unsigned> HwModes;
+
+  // Map {HwMode: {Opcode: Encoding}}.
+  std::map<unsigned, DenseMap<unsigned, InstructionEncoding>> EncodingsByHwMode;
+  EncodingsByHwMode.try_emplace(DefaultMode);
+
   BitWidth = 0;
   for (const CodeGenInstruction *CGI : EncodedInstructions) {
     const Record *R = CGI->TheDef;
     if (const Record *RV = R->getValueAsOptionalDef("EncodingInfos")) {
       EncodingInfoByHwMode EBM(RV, CGH);
       for (const auto &[Key, Value] : EBM) {
-        const BitsInit *BI = Value->getValueAsBitsInit("Inst");
-        BitWidth = std::max(BitWidth, BI->getNumBits());
-        HwModes.insert(Key);
+        auto [I, Inserted] =
+            EncodingsByHwMode[Key].try_emplace(CGI->EnumVal, Value, CGI);
+        BitWidth = std::max(BitWidth, I->second.getBitWidth());
       }
       continue;
     }
-    const BitsInit *BI = R->getValueAsBitsInit("Inst");
-    BitWidth = std::max(BitWidth, BI->getNumBits());
+    auto [I, Inserted] =
+        EncodingsByHwMode[DefaultMode].try_emplace(CGI->EnumVal, R, CGI);
+    BitWidth = std::max(BitWidth, I->second.getBitWidth());
   }
-  UseAPInt = BitWidth > 64;
 
   // Emit function declaration
   if (UseAPInt) {
@@ -493,15 +396,10 @@ void CodeEmitterGen::run(raw_ostream &O) {
   }
 
   // Emit instruction base values
-  emitInstructionBaseValues(O, EncodedInstructions, DefaultMode);
-  if (!HwModes.empty()) {
-    // Emit table for instrs whose encodings are controlled by HwModes.
-    for (unsigned HwMode : HwModes) {
-      if (HwMode == DefaultMode)
-        continue;
-      emitInstructionBaseValues(O, EncodedInstructions, HwMode);
-    }
+  for (const auto &[HwMode, Encodings] : EncodingsByHwMode)
+    emitInstructionBaseValues(O, EncodedInstructions, HwMode, Encodings);
 
+  if (EncodingsByHwMode.size() > 1) {
     // This pointer will be assigned to the HwMode table later.
     O << "  const uint64_t *InstBitsByHw;\n";
   }
@@ -516,7 +414,7 @@ void CodeEmitterGen::run(raw_ostream &O) {
     std::string InstName =
         (R->getValueAsString("Namespace") + "::" + R->getName()).str();
     std::string Case, BitOffsetCase;
-    std::tie(Case, BitOffsetCase) = getInstructionCases(R);
+    std::tie(Case, BitOffsetCase) = getInstructionCases(CGI, EncodingsByHwMode);
 
     CaseMap[Case].push_back(InstName);
     BitOffsetCaseMap[BitOffsetCase].push_back(std::move(InstName));
