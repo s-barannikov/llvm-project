@@ -2199,8 +2199,16 @@ bool CombineRuleBuilder::emitBuiltinApplyPattern(
   llvm_unreachable("Unknown BuiltinKind!");
 }
 
-bool isLiteralImm(const InstructionPattern &P, unsigned OpIdx) {
+static bool isLiteralImm(const InstructionPattern &P, unsigned OpIdx) {
   if (const auto *CGP = dyn_cast<CodeGenInstructionPattern>(&P)) {
+    if (!CGP->isIntrinsic()) {
+      // Check if this is an untyped immediate operand, such as untyped_imm_0.
+      const Record *OpRec = CGP->getInst().Operands[OpIdx].Rec;
+      if (OpRec->isSubClassOf("TypedOperand") &&
+          OpRec->getValueAsBit("IsImmediate"))
+        return true;
+    }
+    // G_CONSTANT/G_FCONSTANT operand is typed.
     StringRef InstName = CGP->getInst().getName();
     return (InstName == "G_CONSTANT" || InstName == "G_FCONSTANT") &&
            OpIdx == 1;

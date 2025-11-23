@@ -17,7 +17,7 @@ def InstTest0 : GICombineRule<
 // implicitly emits a G_CONSTANT
 def InstTest1 : GICombineRule<
   (defs root:$a),
-  (match (G_ZEXT $a, 0)),
+  (match (G_SEXT_INREG $a, $b, 8)),
   (apply (COPY $a, (i32 0)))>;
 
 // emits a CImm because G_CONSTANT is a special case.
@@ -35,9 +35,9 @@ def MyCombiner: GICombiner<"GenMyCombiner", [
 //      CHECK: const uint8_t *GenMyCombiner::getMatchTable() const {
 // CHECK-NEXT:   constexpr static uint8_t MatchTable0[] = {
 // CHECK-NEXT:     GIM_SwitchOpcode, /*MI*/0, /*[*/GIMT_Encode2(20), GIMT_Encode2({{[0-9]+}}), /*)*//*default:*//*Label 3*/ GIMT_Encode4([[L579:[0-9]+]]),
-// CHECK-NEXT:     /*TargetOpcode::COPY*//*Label 0*/ GIMT_Encode4([[L462:[0-9]+]]), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0),
-// CHECK-NEXT:     /*TargetOpcode::G_CONSTANT*//*Label 1*/ GIMT_Encode4([[L493:[0-9]+]]), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0), GIMT_Encode4(0),
-// CHECK-NEXT:     /*TargetOpcode::G_ZEXT*//*Label 2*/ GIMT_Encode4({{[0-9]+}}),
+// CHECK-NEXT:     /*TargetOpcode::COPY*//*Label 0*/ GIMT_Encode4([[L462:[0-9]+]]),
+// CHECK-NEXT:     /*TargetOpcode::G_CONSTANT*//*Label 1*/ GIMT_Encode4([[L493:[0-9]+]]),
+// CHECK-NEXT:     /*TargetOpcode::G_SEXT_INREG*//*Label 2*/ GIMT_Encode4({{[0-9]+}}),
 // CHECK-NEXT:     // Label 0: @[[L462]]
 // CHECK-NEXT:     GIM_Try, /*On fail goto*//*Label 4*/ GIMT_Encode4([[L492:[0-9]+]]), // Rule ID 0 //
 // CHECK-NEXT:       GIM_CheckSimplePredicate, GIMT_Encode2(GICXXPred_Simple_IsRule0Enabled),
@@ -71,8 +71,10 @@ def MyCombiner: GICombiner<"GenMyCombiner", [
 // CHECK-NEXT:       GIM_CheckSimplePredicate, GIMT_Encode2(GICXXPred_Simple_IsRule1Enabled),
 // CHECK-NEXT:       // MIs[0] a
 // CHECK-NEXT:       // No operand predicates
-// CHECK-NEXT:       // MIs[0] Operand 1
-// CHECK-NEXT:       GIM_CheckConstantInt8, /*MI*/0, /*Op*/1, 0,
+// CHECK-NEXT:       // MIs[0] b
+// CHECK-NEXT:       // No operand predicates
+// CHECK-NEXT:       // MIs[0] Operand 2
+// CHECK-NEXT:       GIM_CheckConstantInt8, /*MI*/0, /*Op*/2, 8,
 // CHECK-NEXT:       GIR_MakeTempReg, /*TempRegID*/0, /*TypeID*/GILLT_s32,
 // CHECK-NEXT:       GIR_BuildConstant, /*TempRegID*/0, /*Val*/GIMT_Encode8(0),
 // CHECK-NEXT:       // Combiner Rule #1: InstTest1
