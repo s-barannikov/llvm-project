@@ -36,6 +36,7 @@ add_lldb_library(lldbSymbol NO_PLUGIN_DEPENDENCIES
   ADDITIONAL_HEADER_DIRS
     ${LLDB_INCLUDE_DIR}/lldb/Symbol
   LINK_COMPONENTS
+    DebugInfoDWARFLowLevel
     Support
   LINK_LIBS
     lldbCore

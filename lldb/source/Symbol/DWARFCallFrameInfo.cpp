@@ -21,6 +21,8 @@
 #include "lldb/Utility/Log.h"
 #include "lldb/Utility/Timer.h"
 #include "llvm/BinaryFormat/Dwarf.h"
+#include "llvm/DebugInfo/DWARF/LowLevel/DWARFCFIProgram.h"
+
 #include <cstdint>
 #include <cstring>
 #include <list>
@@ -165,6 +167,11 @@ static bool IsCIEMarker(uint64_t cie_id, bool is_64bit,
   // DWARF32
   return cie_id == llvm::dwarf::DW_CIE_ID;
 }
+
+static bool
+HandleCommonDwarfOpcode(const llvm::dwarf::CFIProgram &program,
+                        const llvm::dwarf::CFIProgram::Instruction &inst,
+                        UnwindPlan::Row &row);
 
 DWARFCallFrameInfo::DWARFCallFrameInfo(ObjectFile &objfile,
                                        SectionSP &section_sp, Type type)
@@ -434,14 +441,18 @@ DWARFCallFrameInfo::ParseCIE(const dw_offset_t cie_offset) {
       cie_sp->inst_offset = offset;
       cie_sp->inst_length = end_offset - offset;
     }
-    while (offset < end_offset) {
-      uint8_t inst = m_cfi_data.GetU8(&offset);
-      uint8_t primary_opcode = inst & 0xC0;
-      uint8_t extended_opcode = inst & 0x3F;
 
-      if (!HandleCommonDwarfOpcode(primary_opcode, extended_opcode,
-                                   cie_sp->data_align, offset,
-                                   cie_sp->initial_row))
+    llvm::DWARFDataExtractorSimple cfi_data(
+        m_cfi_data.GetData(), m_cfi_data.GetByteOrder() == eByteOrderLittle,
+        m_cfi_data.GetAddressByteSize());
+
+    CFIProgram program(cie_sp->code_align, cie_sp->data_align,
+                       m_objfile.GetArchitecture().GetTriple().getArch());
+    if (llvm::Error error = program.parse(cfi_data, &offset, end_offset))
+      return cie_sp;
+
+    for (const CFIProgram::Instruction &inst : program) {
+      if (!HandleCommonDwarfOpcode(program, inst, cie_sp->initial_row))
         break; // Stop if we hit an unrecognized opcode
     }
   }
@@ -630,126 +641,103 @@ DWARFCallFrameInfo::ParseFDE(dw_offset_t dwarf_offset,
   fde.range = range;
   fde.return_addr_reg_num = cie->return_addr_reg_num;
 
-  uint32_t code_align = cie->code_align;
-  int32_t data_align = cie->data_align;
-
   UnwindPlan::Row row = cie->initial_row;
   std::vector<UnwindPlan::Row> stack;
 
   UnwindPlan::Row::AbstractRegisterLocation reg_location;
-  while (m_cfi_data.ValidOffset(offset) && offset < end_offset) {
-    uint8_t inst = m_cfi_data.GetU8(&offset);
-    uint8_t primary_opcode = inst & 0xC0;
-    uint8_t extended_opcode = inst & 0x3F;
 
-    if (!HandleCommonDwarfOpcode(primary_opcode, extended_opcode, data_align,
-                                 offset, row)) {
-      if (primary_opcode) {
-        switch (primary_opcode) {
-        case DW_CFA_advance_loc: {
-          fde.rows.push_back(row);
-          row.SlideOffset(extended_opcode * code_align);
-          break;
-        }
+  llvm::DWARFDataExtractorSimple cfi_data(
+      m_cfi_data.GetData(), m_cfi_data.GetByteOrder() == eByteOrderLittle,
+      m_cfi_data.GetAddressByteSize());
 
-        case DW_CFA_restore: {
-          uint32_t reg_num = extended_opcode;
-          // We only keep enough register locations around to unwind what is in
-          // our thread, and these are organized by the register index in that
-          // state, so we need to convert our eh_frame register number from the
-          // EH frame info, to a register index
+  CFIProgram program(cie->code_align, cie->data_align,
+                     m_objfile.GetArchitecture().GetTriple().getArch());
+  if (llvm::Error error = program.parse(cfi_data, &offset, end_offset))
+    return std::nullopt;
 
-          if (fde.rows[0].GetRegisterInfo(reg_num, reg_location))
-            row.SetRegisterInfo(reg_num, reg_location);
-          else {
-            // If the register was not set in the first row, remove the
-            // register info to keep the unmodified value from the caller.
-            row.RemoveRegisterInfo(reg_num);
-          }
-          break;
-        }
-        }
-      } else {
-        switch (extended_opcode) {
-        case DW_CFA_set_loc: {
-          fde.rows.push_back(row);
-          row.SetOffset(m_cfi_data.GetAddress(&offset) -
-                        startaddr.GetFileAddress());
-          break;
-        }
+  for (const CFIProgram::Instruction &inst : program) {
+    if (!HandleCommonDwarfOpcode(program, inst, row)) {
+      switch (static_cast<llvm::dwarf::CallFrameInfo>(inst.Opcode)) {
+      case DW_CFA_advance_loc:
+      case DW_CFA_advance_loc1:
+      case DW_CFA_advance_loc2:
+      case DW_CFA_advance_loc4: {
+        fde.rows.push_back(row);
+        uint64_t delta = cantFail(inst.getOperandAsUnsigned(program, 0));
+        row.SlideOffset(delta);
+        break;
+      }
 
-        case DW_CFA_advance_loc1: {
-          fde.rows.push_back(row);
-          row.SlideOffset(m_cfi_data.GetU8(&offset) * code_align);
-          break;
-        }
+      case DW_CFA_restore: {
+        uint32_t reg_num = cantFail(inst.getOperandAsUnsigned(program, 0));
+        // We only keep enough register locations around to unwind what is in
+        // our thread, and these are organized by the register index in that
+        // state, so we need to convert our eh_frame register number from the
+        // EH frame info, to a register index
 
-        case DW_CFA_advance_loc2: {
-          fde.rows.push_back(row);
-          row.SlideOffset(m_cfi_data.GetU16(&offset) * code_align);
-          break;
-        }
-
-        case DW_CFA_advance_loc4: {
-          fde.rows.push_back(row);
-          row.SlideOffset(m_cfi_data.GetU32(&offset) * code_align);
-          break;
-        }
-
-        case DW_CFA_restore_extended: {
-          uint32_t reg_num = (uint32_t)m_cfi_data.GetULEB128(&offset);
-          if (fde.rows[0].GetRegisterInfo(reg_num, reg_location))
-            row.SetRegisterInfo(reg_num, reg_location);
-          break;
-        }
-
-        case DW_CFA_remember_state: {
-          stack.push_back(row);
-          break;
-        }
-
-        case DW_CFA_restore_state: {
-          if (stack.empty()) {
-            LLDB_LOG(log,
-                     "DWARFCallFrameInfo::{0}(dwarf_offset: "
-                     "{1:x16}, startaddr: [{2:x16}] encountered "
-                     "DW_CFA_restore_state but state stack "
-                     "is empty. Corrupt unwind info?",
-                     __FUNCTION__, dwarf_offset, startaddr.GetFileAddress());
-            break;
-          }
-          int64_t offset = row.GetOffset();
-          row = std::move(stack.back());
-          stack.pop_back();
-          row.SetOffset(offset);
-          break;
-        }
-
-        case DW_CFA_GNU_args_size: {
-          // TODO: Figure out how we should handle this.
-          m_cfi_data.GetULEB128(&offset);
-          break;
-        }
-
-        case DW_CFA_val_offset: {
-          uint32_t reg_num = (uint32_t)m_cfi_data.GetULEB128(&offset);
-          int32_t op_offset =
-              (int32_t)m_cfi_data.GetULEB128(&offset) * data_align;
-          reg_location.SetIsCFAPlusOffset(op_offset);
+        if (fde.rows[0].GetRegisterInfo(reg_num, reg_location))
           row.SetRegisterInfo(reg_num, reg_location);
-          break;
+        else {
+          // If the register was not set in the first row, remove the
+          // register info to keep the unmodified value from the caller.
+          row.RemoveRegisterInfo(reg_num);
         }
-        case DW_CFA_val_offset_sf: {
-          uint32_t reg_num = (uint32_t)m_cfi_data.GetULEB128(&offset);
-          int32_t op_offset =
-              (int32_t)m_cfi_data.GetSLEB128(&offset) * data_align;
-          reg_location.SetIsCFAPlusOffset(op_offset);
+        break;
+      }
+
+      case DW_CFA_set_loc: {
+        fde.rows.push_back(row);
+        addr_t new_addr = cantFail(inst.getOperandAsUnsigned(program, 0));
+        row.SetOffset(new_addr - startaddr.GetFileAddress());
+        break;
+      }
+
+      case DW_CFA_restore_extended: {
+        // TODO: Merge with DW_CFA_restore.
+        uint32_t reg_num = cantFail(inst.getOperandAsUnsigned(program, 0));
+        if (fde.rows[0].GetRegisterInfo(reg_num, reg_location))
           row.SetRegisterInfo(reg_num, reg_location);
+        break;
+      }
+
+      case DW_CFA_remember_state: {
+        stack.push_back(row);
+        break;
+      }
+
+      case DW_CFA_restore_state: {
+        if (stack.empty()) {
+          LLDB_LOG(log,
+                   "DWARFCallFrameInfo::{0}(dwarf_offset: "
+                   "{1:x16}, startaddr: [{2:x16}] encountered "
+                   "DW_CFA_restore_state but state stack "
+                   "is empty. Corrupt unwind info?",
+                   __FUNCTION__, dwarf_offset, startaddr.GetFileAddress());
           break;
         }
-        default:
-          break;
-        }
+        int64_t offset = row.GetOffset();
+        row = std::move(stack.back());
+        stack.pop_back();
+        row.SetOffset(offset);
+        break;
+      }
+
+      case DW_CFA_GNU_args_size: {
+        // TODO: Figure out how we should handle this.
+        break;
+      }
+
+      case DW_CFA_val_offset:
+      case DW_CFA_val_offset_sf: {
+        uint32_t reg_num = cantFail(inst.getOperandAsUnsigned(program, 0));
+        int32_t op_offset = cantFail(inst.getOperandAsSigned(program, 1));
+        reg_location.SetIsCFAPlusOffset(op_offset);
+        row.SetRegisterInfo(reg_num, reg_location);
+        break;
+      }
+
+      default:
+        break;
       }
     }
   }
@@ -757,135 +745,101 @@ DWARFCallFrameInfo::ParseFDE(dw_offset_t dwarf_offset,
   return fde;
 }
 
-bool DWARFCallFrameInfo::HandleCommonDwarfOpcode(uint8_t primary_opcode,
-                                                 uint8_t extended_opcode,
-                                                 int32_t data_align,
-                                                 lldb::offset_t &offset,
-                                                 UnwindPlan::Row &row) {
+/// Applies the specified DWARF CFI instruction to the given row. This function
+/// handles the commands that operate only on a single row (these are the ones
+/// that can appear both in CIE and in FDE).
+/// Returns true if the opcode is handled and false otherwise.
+static bool HandleCommonDwarfOpcode(const CFIProgram &program,
+                                    const CFIProgram::Instruction &inst,
+                                    UnwindPlan::Row &row) {
   UnwindPlan::Row::AbstractRegisterLocation reg_location;
 
-  if (primary_opcode) {
-    switch (primary_opcode) {
-    case DW_CFA_offset: {
-      uint8_t reg_num = extended_opcode;
-      int32_t op_offset = (int32_t)m_cfi_data.GetULEB128(&offset) * data_align;
-      reg_location.SetAtCFAPlusOffset(op_offset);
-      row.SetRegisterInfo(reg_num, reg_location);
-      return true;
-    }
-    }
-  } else {
-    switch (extended_opcode) {
-    case DW_CFA_nop:
-      return true;
+  switch (static_cast<llvm::dwarf::CallFrameInfo>(inst.Opcode)) {
+  case DW_CFA_offset:
+  case DW_CFA_offset_extended:
+  case DW_CFA_offset_extended_sf: {
+    uint32_t reg_num = cantFail(inst.getOperandAsUnsigned(program, 0));
+    int32_t op_offset = cantFail(inst.getOperandAsSigned(program, 1));
+    reg_location.SetAtCFAPlusOffset(op_offset);
+    row.SetRegisterInfo(reg_num, reg_location);
+    return true;
+  }
 
-    case DW_CFA_offset_extended: {
-      uint32_t reg_num = (uint32_t)m_cfi_data.GetULEB128(&offset);
-      int32_t op_offset = (int32_t)m_cfi_data.GetULEB128(&offset) * data_align;
-      UnwindPlan::Row::AbstractRegisterLocation reg_location;
-      reg_location.SetAtCFAPlusOffset(op_offset);
-      row.SetRegisterInfo(reg_num, reg_location);
-      return true;
-    }
+  case DW_CFA_nop:
+    return true;
 
-    case DW_CFA_undefined: {
-      uint32_t reg_num = (uint32_t)m_cfi_data.GetULEB128(&offset);
-      UnwindPlan::Row::AbstractRegisterLocation reg_location;
-      reg_location.SetUndefined();
-      row.SetRegisterInfo(reg_num, reg_location);
-      return true;
-    }
+  case DW_CFA_undefined: {
+    uint32_t reg_num = cantFail(inst.getOperandAsUnsigned(program, 0));
+    reg_location.SetUndefined();
+    row.SetRegisterInfo(reg_num, reg_location);
+    return true;
+  }
 
-    case DW_CFA_same_value: {
-      uint32_t reg_num = (uint32_t)m_cfi_data.GetULEB128(&offset);
-      UnwindPlan::Row::AbstractRegisterLocation reg_location;
-      reg_location.SetSame();
-      row.SetRegisterInfo(reg_num, reg_location);
-      return true;
-    }
+  case DW_CFA_same_value: {
+    uint32_t reg_num = cantFail(inst.getOperandAsUnsigned(program, 0));
+    reg_location.SetSame();
+    row.SetRegisterInfo(reg_num, reg_location);
+    return true;
+  }
 
-    case DW_CFA_register: {
-      uint32_t reg_num = (uint32_t)m_cfi_data.GetULEB128(&offset);
-      uint32_t other_reg_num = (uint32_t)m_cfi_data.GetULEB128(&offset);
-      UnwindPlan::Row::AbstractRegisterLocation reg_location;
-      reg_location.SetInRegister(other_reg_num);
-      row.SetRegisterInfo(reg_num, reg_location);
-      return true;
-    }
+  case DW_CFA_register: {
+    uint32_t reg_num = cantFail(inst.getOperandAsUnsigned(program, 0));
+    uint32_t other_reg_num = cantFail(inst.getOperandAsUnsigned(program, 1));
+    reg_location.SetInRegister(other_reg_num);
+    row.SetRegisterInfo(reg_num, reg_location);
+    return true;
+  }
 
-    case DW_CFA_def_cfa: {
-      uint32_t reg_num = (uint32_t)m_cfi_data.GetULEB128(&offset);
-      int32_t op_offset = (int32_t)m_cfi_data.GetULEB128(&offset);
-      row.GetCFAValue().SetIsRegisterPlusOffset(reg_num, op_offset);
-      return true;
-    }
+  case DW_CFA_def_cfa:
+  case DW_CFA_def_cfa_sf: {
+    uint32_t reg_num = cantFail(inst.getOperandAsUnsigned(program, 0));
+    int32_t op_offset = cantFail(inst.getOperandAsSigned(program, 1));
+    row.GetCFAValue().SetIsRegisterPlusOffset(reg_num, op_offset);
+    return true;
+  }
 
-    case DW_CFA_def_cfa_register: {
-      uint32_t reg_num = (uint32_t)m_cfi_data.GetULEB128(&offset);
-      row.GetCFAValue().SetIsRegisterPlusOffset(reg_num,
-                                                row.GetCFAValue().GetOffset());
-      return true;
-    }
+  case DW_CFA_def_cfa_register: {
+    uint32_t reg_num = cantFail(inst.getOperandAsUnsigned(program, 0));
+    row.GetCFAValue().SetIsRegisterPlusOffset(reg_num,
+                                              row.GetCFAValue().GetOffset());
+    return true;
+  }
 
-    case DW_CFA_def_cfa_offset: {
-      int32_t op_offset = (int32_t)m_cfi_data.GetULEB128(&offset);
-      row.GetCFAValue().SetIsRegisterPlusOffset(
-          row.GetCFAValue().GetRegisterNumber(), op_offset);
-      return true;
-    }
+  case DW_CFA_def_cfa_offset:
+  case DW_CFA_def_cfa_offset_sf: {
+    int32_t op_offset = cantFail(inst.getOperandAsSigned(program, 0));
+    row.GetCFAValue().SetIsRegisterPlusOffset(
+        row.GetCFAValue().GetRegisterNumber(), op_offset);
+    return true;
+  }
 
-    case DW_CFA_def_cfa_expression: {
-      size_t block_len = (size_t)m_cfi_data.GetULEB128(&offset);
-      const uint8_t *block_data =
-          static_cast<const uint8_t *>(m_cfi_data.GetData(&offset, block_len));
-      row.GetCFAValue().SetIsDWARFExpression(block_data, block_len);
-      return true;
-    }
+  case DW_CFA_def_cfa_expression: {
+    llvm::ArrayRef<uint8_t> block =
+        arrayRefFromStringRef(inst.Expression->getData());
+    row.GetCFAValue().SetIsDWARFExpression(block.data(), block.size());
+    return true;
+  }
 
-    case DW_CFA_expression: {
-      uint32_t reg_num = (uint32_t)m_cfi_data.GetULEB128(&offset);
-      uint32_t block_len = (uint32_t)m_cfi_data.GetULEB128(&offset);
-      const uint8_t *block_data =
-          static_cast<const uint8_t *>(m_cfi_data.GetData(&offset, block_len));
-      UnwindPlan::Row::AbstractRegisterLocation reg_location;
-      reg_location.SetAtDWARFExpression(block_data, block_len);
-      row.SetRegisterInfo(reg_num, reg_location);
-      return true;
-    }
+  case DW_CFA_expression: {
+    uint32_t reg_num = cantFail(inst.getOperandAsUnsigned(program, 0));
+    llvm::ArrayRef<uint8_t> block =
+        arrayRefFromStringRef(inst.Expression->getData());
+    reg_location.SetAtDWARFExpression(block.data(), block.size());
+    row.SetRegisterInfo(reg_num, reg_location);
+    return true;
+  }
 
-    case DW_CFA_offset_extended_sf: {
-      uint32_t reg_num = (uint32_t)m_cfi_data.GetULEB128(&offset);
-      int32_t op_offset = (int32_t)m_cfi_data.GetSLEB128(&offset) * data_align;
-      UnwindPlan::Row::AbstractRegisterLocation reg_location;
-      reg_location.SetAtCFAPlusOffset(op_offset);
-      row.SetRegisterInfo(reg_num, reg_location);
-      return true;
-    }
+  case DW_CFA_val_expression: {
+    uint32_t reg_num = cantFail(inst.getOperandAsUnsigned(program, 0));
+    llvm::ArrayRef<uint8_t> block =
+        arrayRefFromStringRef(inst.Expression->getData());
+    reg_location.SetIsDWARFExpression(block.data(), block.size());
+    row.SetRegisterInfo(reg_num, reg_location);
+    return true;
+  }
 
-    case DW_CFA_def_cfa_sf: {
-      uint32_t reg_num = (uint32_t)m_cfi_data.GetULEB128(&offset);
-      int32_t op_offset = (int32_t)m_cfi_data.GetSLEB128(&offset) * data_align;
-      row.GetCFAValue().SetIsRegisterPlusOffset(reg_num, op_offset);
-      return true;
-    }
-
-    case DW_CFA_def_cfa_offset_sf: {
-      int32_t op_offset = (int32_t)m_cfi_data.GetSLEB128(&offset) * data_align;
-      uint32_t cfa_regnum = row.GetCFAValue().GetRegisterNumber();
-      row.GetCFAValue().SetIsRegisterPlusOffset(cfa_regnum, op_offset);
-      return true;
-    }
-
-    case DW_CFA_val_expression: {
-      uint32_t reg_num = (uint32_t)m_cfi_data.GetULEB128(&offset);
-      uint32_t block_len = (uint32_t)m_cfi_data.GetULEB128(&offset);
-      const uint8_t *block_data =
-          (const uint8_t *)m_cfi_data.GetData(&offset, block_len);
-      reg_location.SetIsDWARFExpression(block_data, block_len);
-      row.SetRegisterInfo(reg_num, reg_location);
-      return true;
-    }
-    }
+  default:
+    break;
   }
   return false;
 }
