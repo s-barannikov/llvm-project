@@ -25,17 +25,16 @@
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Value.h"
+#include "llvm/Support/Allocator.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
-#include "llvm/Support/MemAlloc.h"
 #include "llvm/Support/TypeSize.h"
 #include "llvm/TargetParser/Triple.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
-#include <cstdlib>
 #include <new>
 #include <utility>
 
@@ -120,17 +119,17 @@ unsigned StructLayout::getElementContainingOffset(uint64_t FixedOffset) const {
 namespace {
 
 class StructLayoutMap {
-  using LayoutInfoTy = DenseMap<StructType *, StructLayout *>;
-  LayoutInfoTy LayoutInfo;
+  // StructLayout is allocated with a variable-length trailing array, so the
+  // allocator cannot walk them at a fixed stride to run destructors. They are
+  // trivially destructible, so reclaiming the memory is all that is needed.
+  static_assert(std::is_trivially_destructible_v<StructLayout>);
+  BumpPtrAllocator Allocator;
+  DenseMap<StructType *, StructLayout *> LayoutInfo;
 
 public:
-  ~StructLayoutMap() {
-    // Remove any layouts.
-    for (const auto &I : LayoutInfo) {
-      StructLayout *Value = I.second;
-      Value->~StructLayout();
-      free(Value);
-    }
+  StructLayout *allocate(size_t Size) {
+    return static_cast<StructLayout *>(
+        Allocator.Allocate(Size, Align(alignof(StructLayout))));
   }
 
   StructLayout *&operator[](StructType *STy) { return LayoutInfo[STy]; }
@@ -804,8 +803,8 @@ const StructLayout *DataLayout::getStructLayout(StructType *Ty) const {
   if (SL) return SL;
 
   // Otherwise, create the struct layout.  Because it is variable length, we
-  // malloc it, then use placement new.
-  StructLayout *L = (StructLayout *)safe_malloc(
+  // allocate raw bytes, then use placement new.
+  StructLayout *L = STM->allocate(
       StructLayout::totalSizeToAlloc<TypeSize>(Ty->getNumElements()));
 
   // Set SL before calling StructLayout's ctor.  The ctor could cause other
